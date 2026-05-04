@@ -248,7 +248,7 @@ export class DiscordAdapter extends MessagingAdapter {
                       components: [buildSessionControlKeyboard(sessionId, false, false)],
                     }),
                   )
-                  .then((controlMsg) => this.persistControlMsgId(sessionId, controlMsg.id));
+                  .then((controlMsg) => this.persistSessionControlMsgId(sessionId, controlMsg.id));
               })
               .catch((err) => {
                 log.warn({ err, sessionId, threadId }, '[DiscordAdapter] Failed to send initial messages for API-created session');
@@ -367,7 +367,7 @@ export class DiscordAdapter extends MessagingAdapter {
           `This thread was auto-created from #${'name' in message.channel ? message.channel.name : route.laneKey}.`,
         components: [controlRow],
       })
-      await this.persistControlMsgId(session.id, controlMsg.id).catch(() => {})
+      await this.persistSessionControlMsgId(session.id, controlMsg.id)
 
       let text = message.content
       const attachments = await this.processIncomingAttachments(message, session.id)
@@ -399,6 +399,24 @@ export class DiscordAdapter extends MessagingAdapter {
       }
       await message.reply(`❌ ${err instanceof Error ? err.message : String(err)}`).catch(() => {})
       return true
+    }
+  }
+
+  async persistSessionControlMsgId(sessionId: string, controlMsgId: string): Promise<void> {
+    if (!sessionId || !controlMsgId) return
+
+    try {
+      const record = this.core.sessionManager.getSessionRecord(sessionId)
+      if (!record) return
+
+      await this.core.sessionManager.patchRecord(sessionId, {
+        platform: {
+          ...(record.platform ?? {}),
+          controlMsgId,
+        },
+      })
+    } catch {
+      // Best effort only.
     }
   }
 

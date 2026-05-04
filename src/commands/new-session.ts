@@ -135,7 +135,7 @@ export async function executeNewSession(
     })
 
     // Persist control message ID for post-restart button updates
-    await adapter.persistControlMsgId(session.id, controlMsg.id).catch(() => {})
+    await adapter.persistSessionControlMsgId(session.id, controlMsg.id).catch(() => {})
 
     // Reply to the interaction with a link to the thread
     const replyMsg = `✅ Session created → [Open thread](https://discord.com/channels/${adapter.getGuildId()}/${thread.id})`
