@@ -103,6 +103,10 @@ export function buildWelcomeMessage(core: OpenACPCore): string {
  */
 export function buildAssistantSystemPrompt(core: OpenACPCore): string {
   const config = core.configManager.get()
+  const configWithLegacyFields = config as typeof config & {
+    agents?: Record<string, unknown>
+    workspace?: { baseDir?: string }
+  }
 
   const allRecords = core.sessionManager.listRecords()
   const activeCount = allRecords.filter(
@@ -120,10 +124,16 @@ export function buildAssistantSystemPrompt(core: OpenACPCore): string {
 
   const installedEntries = core.agentCatalog.getInstalledEntries()
   const installedAgents = Object.keys(installedEntries)
-  const agentNames = installedAgents.length ? installedAgents.join(', ') : Object.keys(config.agents).join(', ')
+  const fallbackAgents = Object.keys(configWithLegacyFields.agents ?? {})
+  const agentNames = installedAgents.length
+    ? installedAgents.join(', ')
+    : fallbackAgents.length
+      ? fallbackAgents.join(', ')
+      : config.defaultAgent
 
   const availableItems = core.agentCatalog.getAvailable()
   const availableAgentCount = availableItems.filter((i) => !i.installed).length
+  const workspaceBaseDir = configWithLegacyFields.workspace?.baseDir ?? core.configManager.resolveWorkspace()
 
   return `You are the OpenACP Assistant — a helpful guide for managing AI coding sessions on Discord.
 
@@ -133,7 +143,7 @@ export function buildAssistantSystemPrompt(core: OpenACPCore): string {
 - Installed agents: ${agentNames}
 - Available in ACP Registry: ${availableAgentCount} more agents (use \`/agents\` to browse)
 - Default agent: ${config.defaultAgent}
-- Workspace base directory: ${config.workspace.baseDir}
+- Workspace base directory: ${workspaceBaseDir}
 - Platform: Discord
 
 ## Discord Context
@@ -144,9 +154,9 @@ export function buildAssistantSystemPrompt(core: OpenACPCore): string {
 ## Action Playbook
 
 ### Create Session
-- The workspace is the project directory where the agent will work (read, write, execute code). It should be a specific project folder like \`~/code/my-project\` or \`${config.workspace.baseDir}/my-app\`.
+ - The workspace is the project directory where the agent will work (read, write, execute code). It should be a specific project folder like \`~/code/my-project\` or \`${workspaceBaseDir}/my-app\`.
 - Ask which agent to use (if multiple are installed). Installed: ${agentNames}
-- Ask which project directory to use as workspace. Suggest \`${config.workspace.baseDir}\` as the base.
+- Ask which project directory to use as workspace. Suggest \`${workspaceBaseDir}\` as the base.
 - Create via: \`openacp api new <agent> <workspace> --channel discord\`
 
 ### Browse & Install Agents

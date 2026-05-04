@@ -6,6 +6,16 @@ export interface DiscordPlatformData {
   threadId?: string
   messageId?: string
   skillMsgId?: string
+  laneKey?: string
+  lockedAgent?: boolean
+  laneUxMode?: 'streaming' | 'final_only'
+  suppressNotifications?: boolean
+}
+
+export interface DiscordLaneRoute {
+  agentName: string
+  workingDirectory?: string
+  lockAgent?: boolean
 }
 
 export interface DiscordChannelConfig {
@@ -16,6 +26,7 @@ export interface DiscordChannelConfig {
   notificationChannelId: string | null
   assistantThreadId: string | null
   outputMode?: 'low' | 'medium' | 'high'
+  laneRoutes?: Record<string, DiscordLaneRoute>
   [key: string]: unknown
 }
 

@@ -19,7 +19,12 @@ function createDiscordPlugin(): OpenACPPlugin {
     permissions: ['services:register', 'kernel:access', 'events:read'],
 
     async install(ctx: InstallContext) {
-      const { terminal, settings, legacyConfig } = ctx
+      const { terminal, settings } = ctx
+      const legacyConfig = (ctx as InstallContext & {
+        legacyConfig?: {
+          channels?: Record<string, unknown>
+        }
+      }).legacyConfig
 
       // Migrate from legacy config if present
       if (legacyConfig) {
@@ -32,6 +37,7 @@ function createDiscordPlugin(): OpenACPPlugin {
             forumChannelId: discordCfg.forumChannelId ?? null,
             notificationChannelId: discordCfg.notificationChannelId ?? null,
             assistantThreadId: discordCfg.assistantThreadId ?? null,
+            laneRoutes: discordCfg.laneRoutes ?? {},
           })
           terminal.log.success('Discord settings migrated from legacy config')
           return
@@ -96,6 +102,7 @@ function createDiscordPlugin(): OpenACPPlugin {
         forumChannelId: null,
         notificationChannelId: null,
         assistantThreadId: null,
+        laneRoutes: {},
       })
       terminal.log.success('Discord settings saved')
     },

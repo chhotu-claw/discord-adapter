@@ -1,5 +1,5 @@
 import type { TextChannel, ThreadChannel } from 'discord.js'
-import { MessageDraft } from './streaming.js'
+import { MessageDraft, type DraftMode } from './streaming.js'
 import type { SendQueue } from '@openacp/plugin-sdk'
 import { detectAction, storeAction, buildActionKeyboard } from './action-detect.js'
 
@@ -20,10 +20,14 @@ export class DiscordDraftManager {
     private sendQueue: SendQueue,
   ) {}
 
-  getOrCreate(sessionId: string, thread: TextChannel | ThreadChannel): MessageDraft {
+  getOrCreate(
+    sessionId: string,
+    thread: TextChannel | ThreadChannel,
+    mode: DraftMode = 'streaming',
+  ): MessageDraft {
     let draft = this.drafts.get(sessionId)
     if (!draft) {
-      draft = new MessageDraft(thread, this.sendQueue, sessionId)
+      draft = new MessageDraft(thread, this.sendQueue, sessionId, mode)
       this.drafts.set(sessionId, draft)
     }
     return draft

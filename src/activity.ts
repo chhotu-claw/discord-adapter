@@ -1,5 +1,5 @@
 import type { TextChannel, ThreadChannel, Message } from "discord.js";
-import { log } from "@openacp/plugin-sdk";
+
 import {
   renderToolCard,
   type OutputMode,
@@ -63,107 +63,39 @@ export interface ToolEntry {
 
 // ─── ThinkingIndicator ────────────────────────────────────────────────────────
 
-// Refresh the "thinking" message every 15s to show elapsed time.
-// Auto-stop after 3 minutes to avoid leaving stale indicators.
-const THINKING_REFRESH_MS = 15_000;
-const THINKING_MAX_MS = 3 * 60 * 1000;
-
 /**
- * Manages the transient "💭 Thinking..." message shown while the agent is reasoning.
+ * Tracks the thought lifecycle without posting a visible Discord message.
  *
- * Sends a message on `show()`, periodically edits it with elapsed time, and
- * dismisses it (leaving the message in chat) when text output begins. Leaving
- * the message avoids an extra API delete call; the indicator is just no longer updated.
+ * Agent thinking is represented by Discord's native typing indicator in
+ * low/medium modes. In high mode, thought content is surfaced through the
+ * existing tool card viewer link instead of creating a separate chat message.
  */
 export class ThinkingIndicator {
-  private msg?: Message;
-  private sending = false;
   private dismissed = false;
-  private refreshTimer?: ReturnType<typeof setInterval>;
-  private showTime = 0;
 
-  constructor(
-    private channel: TextChannel | ThreadChannel,
-    private sendQueue: SendQueue,
-  ) {}
+  constructor(_channel: TextChannel | ThreadChannel, _sendQueue: SendQueue) {}
 
   async show(): Promise<void> {
-    if (this.sending || this.dismissed || this.msg) return;
-    this.sending = true;
-    this.showTime = Date.now();
-    try {
-      const result = await this.sendQueue.enqueue(() =>
-        this.channel.send({ content: "💭 *Thinking...*" }),
-      );
-      if (result) {
-        if (!this.dismissed) {
-          this.msg = result;
-          this.startRefreshTimer();
-        }
-      }
-    } catch (err) {
-      log.warn({ err }, "[ThinkingIndicator] show() failed");
-    } finally {
-      this.sending = false;
-    }
+    // No visible message; ActivityTracker.startTyping() owns the user-facing signal.
   }
 
   /**
-   * Edit the indicator to append a viewer link for thinking content, then dismiss.
-   * Used in high output mode when a tunnel is available.
+   * High-mode thinking links are rendered on the tool card, not on a separate
+   * thinking message. Keep this method for lifecycle symmetry.
    */
-  async finalizeWithViewerLink(url: string): Promise<void> {
-    this.stopRefreshTimer();
-    if (this.msg && !this.dismissed) {
-      const msgRef = this.msg;
-      await this.sendQueue
-        .enqueue(() => msgRef.edit({ content: `💭 *Thinking...* — [View thinking](${url})` }))
-        .catch(() => {});
-    }
+  async finalizeWithViewerLink(_url: string): Promise<void> {
     this.dismissed = true;
-    this.msg = undefined;
   }
 
-  /** Dismiss indicator: stops refresh timer. Message stays in chat to reduce API calls. */
+  /** Dismiss indicator lifecycle state. */
   async dismiss(): Promise<void> {
     if (this.dismissed) return;
     this.dismissed = true;
-    this.stopRefreshTimer();
-    this.msg = undefined;
   }
 
   /** Reset for a new prompt cycle. */
   reset(): void {
-    this.stopRefreshTimer();
     this.dismissed = false;
-    this.msg = undefined;
-    this.sending = false;
-  }
-
-  private startRefreshTimer(): void {
-    this.stopRefreshTimer();
-    this.refreshTimer = setInterval(() => {
-      if (this.dismissed || !this.msg || Date.now() - this.showTime >= THINKING_MAX_MS) {
-        this.stopRefreshTimer();
-        return;
-      }
-      const elapsed = Math.round((Date.now() - this.showTime) / 1000);
-      const msgRef = this.msg;
-      this.sendQueue
-        .enqueue(() => {
-          // Re-check after waiting in queue — dismiss may have been called
-          if (this.dismissed || !msgRef) return Promise.resolve(undefined);
-          return msgRef.edit({ content: `💭 *Still thinking... (${elapsed}s)*` });
-        })
-        .catch(() => {});
-    }, THINKING_REFRESH_MS);
-  }
-
-  private stopRefreshTimer(): void {
-    if (this.refreshTimer) {
-      clearInterval(this.refreshTimer);
-      this.refreshTimer = undefined;
-    }
   }
 }
 

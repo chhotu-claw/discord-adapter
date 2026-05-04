@@ -27,6 +27,7 @@ export class PermissionHandler {
     session: Session,
     request: PermissionRequest,
     thread: TextChannel | ThreadChannel,
+    notifyExternally: boolean = true,
   ): Promise<void> {
     // Short callback key (Discord 100-char customId limit)
     const callbackKey = nanoid(8)
@@ -66,17 +67,19 @@ export class PermissionHandler {
       return
     }
 
-    // Build deep link for notification
-    const deepLink = buildDeepLink(this.guildId, thread.id, messageId)
+    if (notifyExternally) {
+      // Build deep link for notification
+      const deepLink = buildDeepLink(this.guildId, thread.id, messageId)
 
-    // Fire-and-forget notification to avoid sendQueue deadlock
-    void this.sendNotification({
-      sessionId: session.id,
-      sessionName: session.name,
-      type: 'permission',
-      summary: request.description,
-      deepLink,
-    })
+      // Fire-and-forget notification to avoid sendQueue deadlock
+      void this.sendNotification({
+        sessionId: session.id,
+        sessionName: session.name,
+        type: 'permission',
+        summary: request.description,
+        deepLink,
+      })
+    }
   }
 
   async handleButtonInteraction(interaction: ButtonInteraction): Promise<boolean> {

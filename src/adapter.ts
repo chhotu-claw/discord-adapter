@@ -27,7 +27,7 @@ import type {
 import { log, MessagingAdapter, SendQueue } from "@openacp/plugin-sdk";
 import type { CommandRegistry } from "@openacp/plugin-sdk";
 import { DiscordRenderer } from "./renderer.js";
-import type { DiscordChannelConfig } from "./types.js";
+import type { DiscordChannelConfig, DiscordPlatformData } from "./types.js";
 import { DiscordDraftManager } from "./draft-manager.js";
 import { ActivityTracker, type ToolCallMeta, type OutputMode, type TunnelServiceInterface } from "./activity.js";
 import { SkillCommandManager } from "./skill-command-manager.js";
@@ -35,6 +35,7 @@ import { PermissionHandler } from "./permissions.js";
 import {
   ensureForums,
   createSessionThread as forumsCreateThread,
+  createThreadFromMessage,
   renameSessionThread as forumsRenameThread,
   deleteSessionThread as forumsDeleteThread,
   ensureUnarchived,
@@ -53,6 +54,13 @@ import {
   downloadDiscordAttachment,
   isAttachmentTooLarge,
 } from "./media.js";
+import { buildLaneThreadName, resolveLaneRoute } from './lane-routes.js'
+import type { DraftMode } from './streaming.js'
+import {
+  resolveDiscordDraftMode,
+  shouldFinalizeDiscordDraftBeforeToolCall,
+  shouldSuppressDiscordNotifications,
+} from './lane-session.js'
 
 export class DiscordAdapter extends MessagingAdapter {
   readonly name = 'discord';
@@ -222,6 +230,8 @@ export class DiscordAdapter extends MessagingAdapter {
             if (!session) return;
             // Assistant manages its own welcome message
             if (this.assistantSession && sessionId === this.assistantSession.id) return;
+            // Lane-root sessions already create their own thread-local control message.
+            if (this.getPlatformData(sessionId)?.laneKey) return;
 
             this.guild.channels.fetch(threadId)
               .then((channel) => {
@@ -290,6 +300,108 @@ export class DiscordAdapter extends MessagingAdapter {
     return this.core.lifecycleManager?.serviceRegistry?.get<CommandRegistry>("command-registry");
   }
 
+  private isAgentSwitchLocked(threadId: string | null | undefined): boolean {
+    if (!threadId) return false
+    const session = this.core.sessionManager.getSessionByThread('discord', threadId)
+    const record = session
+      ? this.core.sessionManager.getSessionRecord(session.id)
+      : this.core.sessionManager.getRecordByThread('discord', threadId)
+    const platform = record?.platform as DiscordPlatformData | undefined
+    return platform?.lockedAgent === true
+  }
+
+  private async replyAgentSwitchLocked(
+    interaction:
+      | import('discord.js').ChatInputCommandInteraction
+      | import('discord.js').ButtonInteraction,
+  ): Promise<void> {
+    const message = '🔒 This session is pinned to its lane agent and cannot switch agents.'
+    if (interaction.replied || interaction.deferred) {
+      await interaction.editReply({ content: message })
+    } else {
+      await interaction.reply({ content: message, ephemeral: true })
+    }
+  }
+
+  private async handleLaneRootMessage(
+    message: import('discord.js').Message,
+  ): Promise<boolean> {
+    const route = resolveLaneRoute(this.discordConfig.laneRoutes, {
+      id: message.channel.id,
+      name: 'name' in message.channel ? message.channel.name : undefined,
+    })
+    if (!route) return false
+    if (message.channel.isThread()) return false
+    if (message.channel.type !== 0) return false
+
+    let thread: ThreadChannel | undefined
+
+    try {
+      const threadName = buildLaneThreadName(route, message)
+      thread = await createThreadFromMessage(message, threadName)
+
+      const session = await this.core.handleNewSession(
+        'discord',
+        route.agentName,
+        route.workingDirectory,
+        { threadId: thread.id },
+      )
+      session.threadId = thread.id
+
+      await this.core.sessionManager.patchRecord(session.id, {
+        platform: {
+          threadId: thread.id,
+          laneKey: route.laneKey,
+          lockedAgent: route.lockAgent ?? true,
+          laneUxMode: 'final_only',
+          suppressNotifications: true,
+        },
+      })
+
+      const controlRow = buildSessionControlKeyboard(session.id, false, false)
+      const controlMsg = await thread.send({
+        content:
+          `✅ **Session started**\n` +
+          `**Agent:** ${session.agentName}\n` +
+          `**Workspace:** \`${session.workingDirectory}\`\n\n` +
+          `This thread was auto-created from #${'name' in message.channel ? message.channel.name : route.laneKey}.`,
+        components: [controlRow],
+      })
+      await this.persistControlMsgId(session.id, controlMsg.id).catch(() => {})
+
+      let text = message.content
+      const attachments = await this.processIncomingAttachments(message, session.id)
+      if (!text && attachments.length > 0) {
+        text = buildFallbackText(attachments)
+      }
+      if (!text && attachments.length === 0 && message.attachments.size > 0) {
+        await thread.send('Failed to process attachment(s)').catch(() => {})
+        return true
+      }
+
+      await this.core.handleMessage({
+        channelId: 'discord',
+        threadId: thread.id,
+        userId: message.author.id,
+        text,
+        ...(attachments.length > 0 ? { attachments } : {}),
+      })
+
+      return true
+    } catch (err) {
+      log.error({ err, channelId: message.channel.id }, '[DiscordAdapter] lane session creation failed')
+      if (thread) {
+        try {
+          await forumsDeleteThread(this.guild, thread.id)
+        } catch {
+          /* ignore */
+        }
+      }
+      await message.reply(`❌ ${err instanceof Error ? err.message : String(err)}`).catch(() => {})
+      return true
+    }
+  }
+
   private setupInteractionHandler(): void {
     this.client.on("interactionCreate", async (interaction) => {
       try {
@@ -308,6 +420,11 @@ export class DiscordAdapter extends MessagingAdapter {
               const channelId = interaction.channelId;
               const sessionId =
                 this.core.sessionManager.getSessionByThread("discord", channelId)?.id ?? null;
+
+              if (commandName === 'switch' && this.isAgentSwitchLocked(channelId)) {
+                await this.replyAgentSwitchLocked(interaction)
+                return
+              }
 
               const response = await registry.execute(
                 `/${commandName} ${rawParts.join(" ")}`.trim(),
@@ -341,6 +458,10 @@ export class DiscordAdapter extends MessagingAdapter {
           }
 
           // Fall through to existing slash command router
+          if (interaction.commandName === 'switch' && this.isAgentSwitchLocked(interaction.channelId)) {
+            await this.replyAgentSwitchLocked(interaction)
+            return
+          }
           await handleSlashCommand(interaction, this);
           return;
         }
@@ -355,6 +476,12 @@ export class DiscordAdapter extends MessagingAdapter {
               const channelId = interaction.channelId;
               const sessionId =
                 this.core.sessionManager.getSessionByThread("discord", channelId)?.id ?? null;
+              const commandName = command.trim().replace(/^\//, '').split(/\s+/, 1)[0];
+
+              if (commandName === 'switch' && this.isAgentSwitchLocked(channelId)) {
+                await this.replyAgentSwitchLocked(interaction);
+                return;
+              }
 
               const response = await registry.execute(command, {
                 raw: "",
@@ -490,6 +617,12 @@ export class DiscordAdapter extends MessagingAdapter {
 
         // Ignore messages from the wrong guild
         if (message.guild.id !== this.guild.id) return;
+
+        // Handle dedicated root lanes that auto-create a new thread + session per message
+        if (!message.channel.isThread()) {
+          const handled = await this.handleLaneRootMessage(message)
+          if (handled) return
+        }
 
         // Only process messages in threads
         if (!message.channel.isThread()) return;
@@ -750,6 +883,19 @@ export class DiscordAdapter extends MessagingAdapter {
     }
   }
 
+  private getPlatformData(sessionId: string): DiscordPlatformData | undefined {
+    const record = this.core.sessionManager.getSessionRecord(sessionId)
+    return record?.platform as DiscordPlatformData | undefined
+  }
+
+  private shouldSuppressNotifications(sessionId: string): boolean {
+    return shouldSuppressDiscordNotifications(this.getPlatformData(sessionId))
+  }
+
+  private resolveDraftMode(sessionId: string): DraftMode {
+    return resolveDiscordDraftMode(this.getPlatformData(sessionId))
+  }
+
   // ─── Helper: get or create activity tracker ──────────────────────────────
 
   private resolveMode(sessionId: string): OutputMode {
@@ -881,7 +1027,11 @@ export class DiscordAdapter extends MessagingAdapter {
       const tracker = this.getOrCreateTracker(sessionId, thread, mode);
       await tracker.onTextStart();
     }
-    const draft = this.draftManager.getOrCreate(sessionId, thread);
+    const draft = this.draftManager.getOrCreate(
+      sessionId,
+      thread,
+      this.resolveDraftMode(sessionId),
+    );
     draft.append(content.text);
     this.draftManager.appendText(sessionId, content.text);
   }
@@ -891,7 +1041,9 @@ export class DiscordAdapter extends MessagingAdapter {
     const meta = (content.metadata ?? {}) as Partial<ToolCallMeta>;
     const mode = this.resolveMode(sessionId);
     const tracker = this.getOrCreateTracker(sessionId, thread, mode);
-    await this.draftManager.finalize(sessionId, thread, isAssistant);
+    if (shouldFinalizeDiscordDraftBeforeToolCall(this.getPlatformData(sessionId))) {
+      await this.draftManager.finalize(sessionId, thread, isAssistant);
+    }
     await tracker.onToolCall(
       {
         id: meta.id ?? "",
@@ -953,11 +1105,16 @@ export class DiscordAdapter extends MessagingAdapter {
     }
 
     // Notify notification channel
-    if (this.notificationChannel && sessionId !== this.assistantSession?.id) {
+    if (this.notificationChannel && sessionId !== this.assistantSession?.id && !this.shouldSuppressNotifications(sessionId)) {
       const sess = this.core.sessionManager.getSession(sessionId);
       const name = sess?.name || "Session";
       try {
-        await this.notificationChannel.send(`\u2705 **${name}** \u2014 Task completed.`);
+        await this.sendNotification({
+          sessionId,
+          sessionName: name,
+          type: 'completed',
+          summary: 'Task completed.',
+        });
       } catch {
         /* best effort */
       }
@@ -1103,6 +1260,7 @@ export class DiscordAdapter extends MessagingAdapter {
       session,
       request,
       thread,
+      !this.shouldSuppressNotifications(sessionId),
     );
   }
 
@@ -1110,6 +1268,7 @@ export class DiscordAdapter extends MessagingAdapter {
 
   async sendNotification(notification: NotificationMessage): Promise<void> {
     if (!this.notificationChannel) return;
+    if (notification.sessionId && this.shouldSuppressNotifications(notification.sessionId)) return;
 
     const typeIcon: Record<string, string> = {
       completed: "✅",

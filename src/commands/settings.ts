@@ -205,7 +205,13 @@ export async function handleSettingsButton(
 
       // For speech.stt.provider: check if API key is configured
       if (fieldPath === 'speech.stt.provider') {
-        const config = adapter.core.configManager.get()
+        const config = adapter.core.configManager.get() as {
+          speech?: {
+            stt?: {
+              providers?: Record<string, { apiKey?: string }>
+            }
+          }
+        }
         const providerConfig = config.speech?.stt?.providers?.[newValue]
         if (!providerConfig?.apiKey) {
           // No API key — delegate to assistant
