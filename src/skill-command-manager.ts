@@ -6,10 +6,9 @@ import type { SessionManager } from '@openacp/plugin-sdk'
 
 const DISCORD_MSG_LIMIT = 1900
 
-function buildSkillContent(commands: AgentCommand[]): string {
-  const sorted = [...commands].sort((a, b) => a.name.localeCompare(b.name))
-  const header = '**Available Skills**\n'
-  const lines = sorted.map((c) => `\`/${c.name}\``)
+function buildSkillContent(_commands: AgentCommand[]): string {
+  const header = '**Quick Commands**\n'
+  const lines = ['`/help`']
   let content = header
   for (const line of lines) {
     const candidate = content + '\n' + line

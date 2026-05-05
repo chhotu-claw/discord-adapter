@@ -358,7 +358,11 @@ export class DiscordAdapter extends MessagingAdapter {
         },
       })
 
-      const controlRow = buildSessionControlKeyboard(session.id, false, false)
+      const controlRow = buildSessionControlKeyboard(
+        session.id,
+        session.clientOverrides?.bypassPermissions ?? false,
+        session.voiceMode === 'on',
+      )
       const controlMsg = await thread.send({
         content:
           `✅ **Session started**\n` +
@@ -663,9 +667,136 @@ export class DiscordAdapter extends MessagingAdapter {
         if (!text && message.attachments.size === 0) return;
 
         // Resolve sessionId for file storage (fallback to "unknown" for new sessions)
-        const sessionId =
+        let sessionId =
           this.core.sessionManager.getSessionByThread("discord", threadId)
             ?.id ?? "unknown";
+
+        // If a legacy thread exists without in-memory session state, restore a lane session
+        // from its parent or naming cues so users can continue typing in old lane threads.
+        if (sessionId === "unknown") {
+          const parentChannel =
+            message.channel.parent ??
+            (message.channel.parentId ? await this.guild.channels.fetch(message.channel.parentId).catch(() => null) : null);
+
+          const forumFallbackRoute = await (async () => {
+            const routes = this.discordConfig.laneRoutes;
+            if (!routes) return null;
+
+            // 1) Primary match from parent channel id/name (preferred)
+            if (parentChannel) {
+              const route = resolveLaneRoute(routes, parentChannel);
+              if (route) return route;
+            }
+
+            // 2) If thread name contains lane hint (e.g. "🔄 gemini — ...") use that.
+            const threadName = ((message.channel as { name?: string } | null) as { name?: string })?.name?.toLowerCase() ?? "";
+            const routeFromName = Object.entries(routes).find(([laneKey, route]) => {
+              const keyMatch = threadName.includes(laneKey.toLowerCase());
+              const agentMatch =
+                typeof route.agentName === "string" ? threadName.includes(route.agentName.toLowerCase()) : false;
+              return keyMatch || agentMatch;
+            });
+            if (routeFromName) {
+              const [laneKey, route] = routeFromName;
+              return {
+                laneKey,
+                ...route,
+              };
+            }
+
+            // 3) Check recent thread history for explicit slash commands (e.g. `/gemini`, `/claude`) so
+            // old threads started manually (or renamed to neutral titles) can recover.
+            try {
+              const fetchedHistory = await message.channel.messages.fetch({ limit: 50 });
+              const history = fetchedHistory.toJSON();
+              for (const msg of history) {
+                if (msg.author?.bot) continue;
+                const lower = (msg.content ?? "").toLowerCase();
+                const routeFromHistory = (() => {
+                  const routeEntries = Object.entries(routes);
+                  const commandRegex = /\/(\w+)/g;
+                  let match: RegExpExecArray | null;
+                  while ((match = commandRegex.exec(lower)) !== null) {
+                    const command = match[1].toLowerCase();
+                    const found = routeEntries.find(
+                      ([laneKey, route]) =>
+                        laneKey.toLowerCase() === command || String(route.agentName).toLowerCase() === command,
+                    );
+                    if (found) {
+                      return found;
+                    }
+                  }
+                  return undefined;
+                })();
+
+                if (routeFromHistory) {
+                  const [laneKey, route] = routeFromHistory;
+                  return {
+                    laneKey,
+                    ...route,
+                  };
+                }
+              }
+            }
+            catch (err) {
+              log.warn({ err, threadId }, "[DiscordAdapter] Failed to infer lane route from thread history");
+            }
+
+            // 4) Last-resort fallback for single-route setups (prevents hard dead-ends on restart).
+            const routeEntries = Object.entries(routes);
+            if (routeEntries.length === 1) {
+              const [laneKey, route] = routeEntries[0];
+              return { laneKey, ...route };
+            }
+
+            return null;
+          })();
+
+          if (forumFallbackRoute) {
+            try {
+              const session = await this.core.handleNewSession(
+                "discord",
+                forumFallbackRoute.agentName,
+                forumFallbackRoute.workingDirectory,
+                { threadId },
+              );
+              session.threadId = threadId;
+
+              await this.core.sessionManager.patchRecord(session.id, {
+                platform: {
+                  threadId,
+                  laneKey: forumFallbackRoute.laneKey,
+                  lockedAgent: forumFallbackRoute.lockAgent ?? true,
+                  laneUxMode: "final_only",
+                  suppressNotifications: true,
+                },
+              });
+              sessionId = session.id;
+
+              try {
+                const controlMsg = await message.channel.send({
+                  content:
+                    `✅ **Session started**\n` +
+                    `**Agent:** ${session.agentName}\n` +
+                    `**Workspace:** \`${session.workingDirectory}\`\n\n` +
+                    `This was a previously used lane thread; continuing in a fresh session.`,
+                  components: [
+                    buildSessionControlKeyboard(
+                      session.id,
+                      session.clientOverrides?.bypassPermissions ?? false,
+                      session.voiceMode === 'on',
+                    ),
+                  ],
+                });
+                await this.persistSessionControlMsgId(session.id, controlMsg.id);
+              } catch {
+                // Control message is non-essential; continue with the new session anyway.
+              }
+            } catch (err) {
+              log.error({ err, threadId }, "[DiscordAdapter] failed to recreate lane session for thread");
+            }
+          }
+        }
 
         // Process attachments
         if (message.attachments.size > 0) {
@@ -1039,7 +1170,8 @@ export class DiscordAdapter extends MessagingAdapter {
   }
 
   protected async handleText(sessionId: string, content: OutgoingMessage): Promise<void> {
-    const { thread } = this.getSessionContext(sessionId);
+    const { thread, isAssistant } = this.getSessionContext(sessionId);
+    const draftMode = this.resolveDraftMode(sessionId);
     if (!this.draftManager.hasDraft(sessionId)) {
       const mode = this.resolveMode(sessionId);
       const tracker = this.getOrCreateTracker(sessionId, thread, mode);
@@ -1048,10 +1180,13 @@ export class DiscordAdapter extends MessagingAdapter {
     const draft = this.draftManager.getOrCreate(
       sessionId,
       thread,
-      this.resolveDraftMode(sessionId),
+      draftMode,
     );
     draft.append(content.text);
     this.draftManager.appendText(sessionId, content.text);
+    if (draftMode === 'final_only') {
+      this.draftManager.scheduleDeferredFinalize(sessionId, thread, isAssistant);
+    }
   }
 
   protected async handleToolCall(sessionId: string, content: OutgoingMessage, _verbosity: DisplayVerbosity): Promise<void> {

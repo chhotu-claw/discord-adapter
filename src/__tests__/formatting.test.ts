@@ -491,20 +491,20 @@ describe("renderUsageEmbed", () => {
   });
 
   describe("medium mode", () => {
-    it("shows tokens, cost, and duration", () => {
+    it("shows tokens and duration without cost", () => {
       const embed = renderUsageEmbed(
         { tokensUsed: 28000, cost: 0.25, duration: 30 },
         "medium",
       );
       const desc = embed.data.description ?? "";
       expect(desc).toContain("28k tokens");
-      expect(desc).toContain("$0.25");
+      expect(desc).not.toContain("$0.25");
       expect(desc).toContain("30s");
     });
   });
 
   describe("high mode", () => {
-    it("shows full progress bar and context percentage", () => {
+    it("shows full progress bar and context percentage without cost", () => {
       const embed = renderUsageEmbed(
         { tokensUsed: 85000, contextSize: 100000, cost: 1.5, duration: 60 },
         "high",
@@ -512,7 +512,7 @@ describe("renderUsageEmbed", () => {
       const desc = embed.data.description ?? "";
       expect(desc).toContain("▓");
       expect(desc).toContain("85%");
-      expect(desc).toContain("$1.50");
+      expect(desc).not.toContain("$1.50");
     });
 
     it("shows warning emoji at >= 85%", () => {

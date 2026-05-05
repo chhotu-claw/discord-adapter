@@ -124,7 +124,11 @@ export async function executeNewSession(
     })
 
     // Send welcome message in the new thread
-    const controlRow = buildSessionControlKeyboard(session.id, false, false)
+    const controlRow = buildSessionControlKeyboard(
+      session.id,
+      session.clientOverrides?.bypassPermissions ?? false,
+      session.voiceMode === 'on',
+    )
     const controlMsg = await thread.send({
       content:
         `✅ **Session started**\n` +
