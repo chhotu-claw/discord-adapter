@@ -3,6 +3,8 @@ import { MessageDraft } from './streaming.js'
 import type { SendQueue } from '@openacp/plugin-sdk'
 import { detectAction, storeAction, buildActionKeyboard } from './action-detect.js'
 
+const FINAL_ONLY_IDLE_FINALIZE_MS = 2500
+
 /**
  * Discord-specific draft manager.
  *
@@ -15,15 +17,20 @@ export class DiscordDraftManager {
   private drafts = new Map<string, MessageDraft>()
   private finalizedDrafts = new Map<string, MessageDraft>()
   private textBuffers = new Map<string, string>()
+  private deferredFinalizeTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   constructor(
     private sendQueue: SendQueue,
   ) {}
 
-  getOrCreate(sessionId: string, thread: TextChannel | ThreadChannel): MessageDraft {
+  getOrCreate(
+    sessionId: string,
+    thread: TextChannel | ThreadChannel,
+    mode: 'streaming' | 'final_only' = 'streaming',
+  ): MessageDraft {
     let draft = this.drafts.get(sessionId)
     if (!draft) {
-      draft = new MessageDraft(thread, this.sendQueue, sessionId)
+      draft = new MessageDraft(thread, this.sendQueue, sessionId, mode)
       this.drafts.set(sessionId, draft)
     }
     return draft
@@ -41,6 +48,32 @@ export class DiscordDraftManager {
     this.textBuffers.set(sessionId, (this.textBuffers.get(sessionId) ?? '') + text)
   }
 
+  scheduleDeferredFinalize(
+    sessionId: string,
+    thread: TextChannel | ThreadChannel,
+    isAssistant?: boolean,
+    delayMs = FINAL_ONLY_IDLE_FINALIZE_MS,
+  ): void {
+    const existingTimer = this.deferredFinalizeTimers.get(sessionId)
+    if (existingTimer) {
+      clearTimeout(existingTimer)
+    }
+
+    const timer = setTimeout(() => {
+      this.deferredFinalizeTimers.delete(sessionId)
+      void this.finalize(sessionId, thread, isAssistant)
+    }, delayMs)
+
+    this.deferredFinalizeTimers.set(sessionId, timer)
+  }
+
+  private clearDeferredFinalize(sessionId: string): void {
+    const timer = this.deferredFinalizeTimers.get(sessionId)
+    if (!timer) return
+    clearTimeout(timer)
+    this.deferredFinalizeTimers.delete(sessionId)
+  }
+
   /**
    * Finalize the current draft.
    * If isAssistant is true, detects action patterns in the accumulated text and sends
@@ -51,6 +84,7 @@ export class DiscordDraftManager {
     thread?: TextChannel | ThreadChannel,
     isAssistant?: boolean,
   ): Promise<void> {
+    this.clearDeferredFinalize(sessionId)
     const draft = this.drafts.get(sessionId)
     if (!draft) return
 
@@ -85,6 +119,7 @@ export class DiscordDraftManager {
   }
 
   cleanup(sessionId: string): void {
+    this.clearDeferredFinalize(sessionId)
     this.drafts.delete(sessionId)
     this.finalizedDrafts.delete(sessionId)
     this.textBuffers.delete(sessionId)

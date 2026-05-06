@@ -18,11 +18,13 @@ export class MessageDraft {
     private thread: TextChannel | ThreadChannel,
     private sendQueue: SendQueue,
     private sessionId: string,
+    private mode: 'streaming' | 'final_only' = 'streaming',
   ) {}
 
   append(text: string): void {
     if (!text) return
     this.buffer += text
+    if (this.mode === 'final_only') return
     this.scheduleFlush()
   }
 
@@ -41,6 +43,7 @@ export class MessageDraft {
   }
 
   async flush(): Promise<void> {
+    if (this.mode === 'final_only') return
     if (!this.buffer) return
     if (this.firstFlushPending) return
 

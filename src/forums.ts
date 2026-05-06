@@ -1,5 +1,5 @@
 import { ChannelType } from 'discord.js'
-import type { ForumChannel, ThreadChannel, Guild, TextChannel } from 'discord.js'
+import type { ForumChannel, ThreadChannel, Guild, TextChannel, Message } from 'discord.js'
 import { log } from '@openacp/plugin-sdk'
 
 // ─── ensureForums ─────────────────────────────────────────────────────────────
@@ -105,6 +105,16 @@ export async function createSessionThread(
   const msg = await textChannel.send({ content: `📂 **${name}** — ⏳ Setting up...` })
   const thread = await msg.startThread({ name })
   return thread
+}
+
+/**
+ * Creates a public thread from an existing user message in a text channel.
+ */
+export async function createThreadFromMessage(
+  message: Message,
+  name: string,
+): Promise<ThreadChannel> {
+  return message.startThread({ name })
 }
 
 // ─── renameSessionThread ──────────────────────────────────────────────────────
