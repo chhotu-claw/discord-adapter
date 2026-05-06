@@ -370,9 +370,7 @@ export function renderUsageEmbed(usage: UsageData, mode: OutputMode): EmbedBuild
   }
 
   if (mode === "medium") {
-    const line1Parts = [`📊 ${formatTokens(tokensUsed)} tokens`];
-    if (cost != null) line1Parts.push(`$${cost.toFixed(2)}`);
-    const lines = [line1Parts.join(" · ")];
+    const lines = [`📊 ${formatTokens(tokensUsed)} tokens`];
     if (durationStr) lines.push(`⏱️ ${durationStr}`);
     embed.setDescription(lines.join("\n"));
     return embed;
@@ -390,7 +388,6 @@ export function renderUsageEmbed(usage: UsageData, mode: OutputMode): EmbedBuild
   const emoji = pct >= 85 ? "⚠️" : "📊";
 
   const lines = [`${emoji} ${formatTokens(tokensUsed)} / ${formatTokens(contextSize)} tokens`, `${bar} ${pct}%`];
-  if (cost != null) lines.push(`💰 $${cost.toFixed(2)}`);
   if (durationStr) lines.push(`⏱️ ${durationStr}`);
 
   embed.setDescription(lines.join("\n"));
@@ -588,20 +585,17 @@ export function formatUsage(
   usage: { tokensUsed?: number; contextSize?: number; cost?: number },
   verbosity: LegacyVerbosity = "medium",
 ): string {
-  const { tokensUsed, contextSize, cost } = usage;
+  const { tokensUsed, contextSize } = usage;
   if (tokensUsed == null) return "📊 Usage data unavailable";
   if (verbosity === "medium") {
-    const costStr = cost != null ? ` · $${cost.toFixed(2)}` : "";
-    return `📊 ${formatTokens(tokensUsed)} tokens${costStr}`;
+    return `📊 ${formatTokens(tokensUsed)} tokens`;
   }
   if (contextSize == null) return `📊 ${formatTokens(tokensUsed)} tokens`;
   const ratio = tokensUsed / contextSize;
   const pct = Math.round(ratio * 100);
   const bar = progressBar(ratio);
   const emoji = pct >= 85 ? "⚠️" : "📊";
-  let text = `${emoji} ${formatTokens(tokensUsed)} / ${formatTokens(contextSize)} tokens\n${bar} ${pct}%`;
-  if (cost != null) text += `\n💰 $${cost.toFixed(2)}`;
-  return text;
+  return `${emoji} ${formatTokens(tokensUsed)} / ${formatTokens(contextSize)} tokens\n${bar} ${pct}%`;
 }
 
 /** @deprecated Use splitToolCardDescription instead */
