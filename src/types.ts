@@ -16,6 +16,10 @@ export interface DiscordChannelConfig {
   notificationChannelId: string | null
   assistantThreadId: string | null
   outputMode?: 'low' | 'medium' | 'high'
+  /** Roots whose immediate subdirectories appear in the /new workspace picker. */
+  workspaceRoots?: string[]
+  /** Directories pinned as-is in the /new workspace picker. */
+  workspacePins?: string[]
   [key: string]: unknown
 }
 

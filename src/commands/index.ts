@@ -6,13 +6,18 @@ export const SLASH_COMMANDS = [
     .setName("new")
     .setDescription("Create a new agent session")
     .addStringOption((o) =>
-      o.setName("agent").setDescription("Agent to use").setRequired(false),
+      o
+        .setName("agent")
+        .setDescription("Agent to use (type to search installed agents)")
+        .setRequired(false)
+        .setAutocomplete(true),
     )
     .addStringOption((o) =>
       o
         .setName("workspace")
-        .setDescription("Workspace directory")
-        .setRequired(false),
+        .setDescription("Workspace directory (type to search your projects)")
+        .setRequired(false)
+        .setAutocomplete(true),
     ),
 
   new SlashCommandBuilder()

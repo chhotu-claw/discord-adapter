@@ -3,8 +3,14 @@ import {
   ButtonBuilder,
   ButtonStyle,
 } from 'discord.js'
-import type { ChatInputCommandInteraction, ButtonInteraction } from 'discord.js'
+import type {
+  ChatInputCommandInteraction,
+  ButtonInteraction,
+  StringSelectMenuInteraction,
+  ModalSubmitInteraction,
+} from 'discord.js'
 import { log } from '@openacp/plugin-sdk'
+import { showWorkspacePicker } from './workspace-picker.js'
 import { buildSessionControlKeyboard } from './admin.js'
 import { createSessionThread, deleteSessionThread, updateSessionThreadStarter } from '../forums.js'
 import type { DiscordAdapter } from '../adapter.js'
@@ -19,7 +25,11 @@ export async function handleNew(
   const workspace = interaction.options.getString('workspace') ?? undefined
 
   if (agentName) {
-    await executeNewSession(interaction, adapter, agentName, workspace)
+    if (workspace) {
+      await executeNewSession(interaction, adapter, agentName, workspace)
+    } else {
+      await showWorkspacePicker(interaction, adapter, agentName)
+    }
     return
   }
 
@@ -34,7 +44,12 @@ export async function handleNew(
   }
 
   if (agentKeys.length === 1) {
-    await executeNewSession(interaction, adapter, agentKeys[0], workspace)
+    const onlyAgent = agentKeys[0]!
+    if (workspace) {
+      await executeNewSession(interaction, adapter, onlyAgent, workspace)
+    } else {
+      await showWorkspacePicker(interaction, adapter, onlyAgent)
+    }
     return
   }
 
@@ -87,7 +102,11 @@ export async function handleNewChat(
 }
 
 export async function executeNewSession(
-  interaction: ChatInputCommandInteraction | ButtonInteraction,
+  interaction:
+    | ChatInputCommandInteraction
+    | ButtonInteraction
+    | StringSelectMenuInteraction
+    | ModalSubmitInteraction,
   adapter: DiscordAdapter,
   agentName?: string,
   workspace?: string,
@@ -180,7 +199,7 @@ export async function handleNewSessionButton(
   if (customId.startsWith('m:new:agent:')) {
     const agentKey = customId.replace('m:new:agent:', '')
     try { await interaction.deferUpdate() } catch { /* ignore */ }
-    await executeNewSession(interaction, adapter, agentKey, undefined)
+    await showWorkspacePicker(interaction, adapter, agentKey)
   }
 }
 

@@ -73,6 +73,8 @@ export class DiscordAdapter extends MessagingAdapter {
   private skillManager!: SkillCommandManager;
   private permissionHandler!: PermissionHandler;
   private sessionTrackers: Map<string, ActivityTracker> = new Map();
+  /** User prompt messages awaiting a turn-end ✅ reaction, keyed by threadId. */
+  private pendingPromptMsg: Map<string, import("discord.js").Message> = new Map();
 
   private guild!: Guild;
   private forumChannel!: ForumChannel | TextChannel;
@@ -300,8 +302,39 @@ export class DiscordAdapter extends MessagingAdapter {
   private setupInteractionHandler(): void {
     this.client.on("interactionCreate", async (interaction) => {
       try {
+        // --- Slash command autocomplete (workspace search) ---
+        if (interaction.isAutocomplete()) {
+          if (interaction.commandName === "new") {
+            const focused = interaction.options.getFocused(true);
+            if (focused.name === "workspace") {
+              const { searchWorkspaces } = await import("./commands/workspace-picker.js");
+              await interaction.respond(searchWorkspaces(this, String(focused.value)));
+              return;
+            }
+            if (focused.name === "agent") {
+              const q = String(focused.value).trim().toLowerCase();
+              const entries = this.core.agentCatalog.getInstalledEntries() as Record<string, { name?: string }>;
+              const choices = Object.entries(entries)
+                .filter(([key, a]) => !q || key.toLowerCase().includes(q) || (a?.name ?? "").toLowerCase().includes(q))
+                .slice(0, 25)
+                .map(([key, a]) => ({ name: a?.name ? `${a.name} (${key})` : key, value: key }));
+              await interaction.respond(choices);
+              return;
+            }
+          }
+          try { await interaction.respond([]); } catch { /* ignore */ }
+          return;
+        }
+
         // --- Generic CommandRegistry dispatch (slash commands) ---
         if (interaction.isChatInputCommand()) {
+          // Session-creation commands need the adapter's Discord UI (agent
+          // buttons + workspace picker), so bypass the generic registry — its
+          // "new" handler only prints a usage string on Discord.
+          if (interaction.commandName === "new" || interaction.commandName === "newchat") {
+            await handleSlashCommand(interaction, this);
+            return;
+          }
           const registry = this.getCommandRegistry();
           if (registry) {
             const commandName = interaction.commandName;
@@ -392,6 +425,19 @@ export class DiscordAdapter extends MessagingAdapter {
           if (!handled) {
             await setupButtonCallbacks(interaction, this);
           }
+          return;
+        }
+
+        // --- Workspace picker (select menu + modal) ---
+        if (interaction.isStringSelectMenu() && interaction.customId.startsWith("wsp:")) {
+          const { handleWorkspaceSelect } = await import("./commands/workspace-picker.js");
+          await handleWorkspaceSelect(interaction, this);
+          return;
+        }
+        if (interaction.isModalSubmit() && interaction.customId.startsWith("wspm:")) {
+          const { handleWorkspaceModal } = await import("./commands/workspace-picker.js");
+          await handleWorkspaceModal(interaction, this);
+          return;
         }
       } catch (err) {
         log.error({ err }, "[DiscordAdapter] interactionCreate handler error");
@@ -584,6 +630,11 @@ export class DiscordAdapter extends MessagingAdapter {
             await tracker.onNewPrompt();
           }
         }
+
+        // Remember this prompt so we can mark its turn complete with a ✅
+        // reaction once the agent finishes (a clear, silent end-of-turn signal
+        // that works at any output mode).
+        this.pendingPromptMsg.set(threadId, message);
 
         // Route to core for session dispatch
         await this.core.handleMessage({
@@ -951,6 +1002,17 @@ export class DiscordAdapter extends MessagingAdapter {
     const { thread, isAssistant } = this.getSessionContext(sessionId);
     await this.draftManager.finalize(sessionId, thread, isAssistant);
 
+    // End-of-turn signal at ANY output mode: react ✅ on the user's prompt.
+    // (The usage embed + #openacp-notifications "Task completed" ping below
+    // stay gated to 'high'; this reaction is the quiet, in-thread "done".)
+    if (!isAssistant) {
+      const promptMsg = this.pendingPromptMsg.get(thread.id);
+      if (promptMsg) {
+        this.pendingPromptMsg.delete(thread.id);
+        try { await promptMsg.react("✅"); } catch { /* needs Add Reactions */ }
+      }
+    }
+
     // Per-mode display rules:
     //   low    — usage events are filtered upstream by HIDDEN_ON_LOW; this
     //             handler isn't called at low (so the in-flight text draft does
@@ -1228,6 +1290,18 @@ export class DiscordAdapter extends MessagingAdapter {
 
   getGuildId(): string {
     return this.guild.id;
+  }
+
+  /** Scan roots for the /new workspace picker (subdirs listed as projects). */
+  getWorkspaceRoots(): string[] {
+    const r = (this.discordConfig as { workspaceRoots?: unknown }).workspaceRoots;
+    return Array.isArray(r) && r.length ? (r as string[]) : ["~/workspace/projects"];
+  }
+
+  /** Directories pinned as-is in the /new workspace picker. */
+  getWorkspacePins(): string[] {
+    const r = (this.discordConfig as { workspacePins?: unknown }).workspacePins;
+    return Array.isArray(r) && r.length ? (r as string[]) : ["~/.hermes"];
   }
 
   getAssistantSessionId(): string | null {
